@@ -4,8 +4,71 @@ import { Inbox, MailPlus, Plus, RefreshCw, Send, Shield, Trash2 } from 'lucide-r
 import './styles.css'
 
 const API = import.meta.env.VITE_API_URL || ''
+const IS_STATIC_DEMO = !API && window.location.hostname.endsWith('github.io')
+
+function readLocal(key, fallback) {
+  return JSON.parse(localStorage.getItem(key) || JSON.stringify(fallback))
+}
+
+function writeLocal(key, value) {
+  localStorage.setItem(key, JSON.stringify(value))
+}
+
+async function staticDemoRequest(path, options = {}) {
+  const method = options.method || 'GET'
+  const body = options.body ? JSON.parse(options.body) : {}
+  const users = readLocal('mailhub_demo_users', [])
+  const current = readLocal('mailhub_user', null)
+
+  if (path === '/api/auth/register' && method === 'POST') {
+    if (users.some((user) => user.email === body.email)) throw new Error('User demo sudah ada. Coba login.')
+    const user = { id: crypto.randomUUID(), email: body.email }
+    users.push({ ...user, password: body.password })
+    writeLocal('mailhub_demo_users', users)
+    return { token: `demo-${user.id}`, user }
+  }
+
+  if (path === '/api/auth/login' && method === 'POST') {
+    const found = users.find((user) => user.email === body.email && user.password === body.password)
+    if (!found) throw new Error('User demo tidak ditemukan. Register dulu di link GitHub Pages.')
+    return { token: `demo-${found.id}`, user: { id: found.id, email: found.email } }
+  }
+
+  if (path === '/api/accounts' && method === 'GET') {
+    return { accounts: readLocal(`mailhub_demo_accounts_${current?.id || 'guest'}`, []) }
+  }
+
+  if (path === '/api/accounts' && method === 'POST') {
+    const key = `mailhub_demo_accounts_${current?.id || 'guest'}`
+    const accounts = readLocal(key, [])
+    const account = { ...body, id: crypto.randomUUID(), createdAt: new Date().toISOString() }
+    delete account.password
+    accounts.push(account)
+    writeLocal(key, accounts)
+    return { account }
+  }
+
+  const deleteMatch = path.match(/^\/api\/accounts\/([^/]+)$/)
+  if (deleteMatch && method === 'DELETE') {
+    const key = `mailhub_demo_accounts_${current?.id || 'guest'}`
+    writeLocal(key, readLocal(key, []).filter((account) => account.id !== deleteMatch[1]))
+    return { deleted: true }
+  }
+
+  if (path.includes('/messages') && method === 'GET') {
+    return { messages: [] }
+  }
+
+  if (path.endsWith('/send') && method === 'POST') {
+    throw new Error('GitHub Pages hanya frontend demo. Untuk kirim email asli perlu deploy backend API Node.js dan set VITE_API_URL.')
+  }
+
+  throw new Error('Endpoint demo tidak tersedia')
+}
 
 function request(path, options = {}) {
+  if (IS_STATIC_DEMO) return staticDemoRequest(path, options)
+
   const token = localStorage.getItem('mailhub_token')
   return fetch(`${API}${path}`, {
     ...options,
@@ -16,8 +79,11 @@ function request(path, options = {}) {
     }
   }).then(async (res) => {
     const data = await res.json().catch(() => ({}))
-    if (!res.ok) throw new Error(data.error || 'Request gagal')
+    if (!res.ok) throw new Error(data.error || `API backend tidak aktif (${res.status}). Deploy server Node.js lalu set VITE_API_URL.`)
     return data
+  }).catch((error) => {
+    if (error instanceof TypeError) throw new Error('Tidak bisa konek ke backend API. Cek VITE_API_URL atau deploy backend dulu.')
+    throw error
   })
 }
 
@@ -50,6 +116,7 @@ function AuthScreen({ onAuthed }) {
       <p className="eyebrow">Multi account email center</p>
       <h1>MailHub</h1>
       <p className="muted">Satu dashboard untuk banyak inbox IMAP dan SMTP sender.</p>
+      {IS_STATIC_DEMO && <div className="notice">Mode GitHub Pages: login/register aktif sebagai demo lokal. Email asli butuh backend API terpisah.</div>}
       <form onSubmit={submit} className="form-stack">
         <label>Email login website<input value={email} onChange={e => setEmail(e.target.value)} type="email" placeholder="admin@mailhub.local" required /></label>
         <label>Password<input value={password} onChange={e => setPassword(e.target.value)} type="password" minLength="6" placeholder="Minimal 6 karakter" required /></label>
